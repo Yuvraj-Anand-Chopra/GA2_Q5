@@ -8,6 +8,11 @@
   ],
   "routes": [
     {
+      "src": "/metrics",
+      "methods": ["POST"],
+      "dest": "main.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "main.py"
     }

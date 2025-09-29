@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from typing import List
 import json
 import numpy as np
-import os
 
 app = FastAPI()
 
@@ -27,46 +26,9 @@ def read_root():
 @app.post("/analyze")
 def analyze_telemetry(request: TelemetryRequest):
     try:
-        # Try different file paths for Vercel serverless environment
-        data_file_paths = [
-            'q-vercel-latency.json',
-            '../q-vercel-latency.json',
-            '/var/task/q-vercel-latency.json',
-            './q-vercel-latency.json'
-        ]
-        
-        data = None
-        for path in data_file_paths:
-            try:
-                if os.path.exists(path):
-                    with open(path, 'r') as f:
-                        data = json.load(f)
-                    break
-            except:
-                continue
-        
-        # If no file found, use sample data
-        if data is None:
-            # Sample data for testing
-            sample_data = []
-            for region in request.regions:
-                if region == "emea":
-                    latencies = np.random.normal(160, 25, 100).tolist()
-                    uptimes = np.random.uniform(96, 99.5, 100).tolist()
-                elif region == "apac":
-                    latencies = np.random.normal(180, 30, 100).tolist()
-                    uptimes = np.random.uniform(94, 99.2, 100).tolist()
-                else:
-                    latencies = np.random.normal(150, 20, 100).tolist()
-                    uptimes = np.random.uniform(95, 99.8, 100).tolist()
-                
-                for i in range(len(latencies)):
-                    sample_data.append({
-                        "region": region,
-                        "latency_ms": latencies[i],
-                        "uptime_percent": uptimes[i]
-                    })
-            data = sample_data
+        # Load the JSON file (it exists in /var/task/ according to debug)
+        with open('q-vercel-latency.json', 'r') as f:
+            data = json.load(f)
         
         results = []
         
@@ -74,25 +36,30 @@ def analyze_telemetry(request: TelemetryRequest):
             # Filter data for this region
             region_data = [record for record in data if record.get('region') == region]
             
-            if region_data:
-                latencies = [record['latency_ms'] for record in region_data]
-                uptimes = [record['uptime_percent'] for record in region_data]
-            else:
-                # Use sample data if region not found
-                if region == "emea":
-                    latencies = np.random.normal(160, 25, 100).tolist()
-                    uptimes = np.random.uniform(96, 99.5, 100).tolist()
-                elif region == "apac":
-                    latencies = np.random.normal(180, 30, 100).tolist()
-                    uptimes = np.random.uniform(94, 99.2, 100).tolist()
-                else:
-                    latencies = np.random.normal(150, 20, 100).tolist()
-                    uptimes = np.random.uniform(95, 99.8, 100).tolist()
+            if not region_data:
+                # If no data for region, return default values
+                results.append({
+                    "region": region,
+                    "avg_latency": 0.0,
+                    "p95_latency": 0.0,
+                    "avg_uptime": 0.0,
+                    "breaches": 0
+                })
+                continue
             
-            avg_latency = float(np.mean(latencies))
-            p95_latency = float(np.percentile(latencies, 95))
-            avg_uptime = float(np.mean(uptimes))
-            breaches = int(sum(1 for lat in latencies if lat > request.threshold_ms))
+            latencies = [record['latency_ms'] for record in region_data if 'latency_ms' in record]
+            uptimes = [record['uptime_percent'] for record in region_data if 'uptime_percent' in record]
+            
+            if latencies and uptimes:
+                avg_latency = float(np.mean(latencies))
+                p95_latency = float(np.percentile(latencies, 95))
+                avg_uptime = float(np.mean(uptimes))
+                breaches = int(sum(1 for lat in latencies if lat > request.threshold_ms))
+            else:
+                avg_latency = 0.0
+                p95_latency = 0.0
+                avg_uptime = 0.0
+                breaches = 0
             
             results.append({
                 "region": region,
@@ -104,9 +71,12 @@ def analyze_telemetry(request: TelemetryRequest):
         
         return {"metrics": results}
         
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Telemetry data file not found")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON format in data file")
     except Exception as e:
-        # Return detailed error for debugging
-        return {"error": str(e), "error_type": type(e).__name__}
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/debug")
 def debug_info():
@@ -115,10 +85,20 @@ def debug_info():
         import os
         current_dir = os.getcwd()
         files_in_dir = os.listdir('.')
+        
+        # Try to read a few lines from the JSON file
+        sample_data = None
+        try:
+            with open('q-vercel-latency.json', 'r') as f:
+                sample_data = json.load(f)[:3]  # First 3 records
+        except:
+            sample_data = "Could not read file"
+        
         return {
             "current_directory": current_dir,
             "files": files_in_dir,
-            "json_file_exists": os.path.exists('q-vercel-latency.json')
+            "json_file_exists": os.path.exists('q-vercel-latency.json'),
+            "sample_data": sample_data
         }
     except Exception as e:
         return {"debug_error": str(e)}
